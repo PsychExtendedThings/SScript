@@ -52,7 +52,6 @@ class Interp {
 	#if haxe3
 	public var variables:Map<String, Dynamic>;
 	public var publicVariables:Map<String, Dynamic>;
-	public var staticVariables:Map<String, Dynamic>;
 	public var dynamicFuncs:Map<String, Bool> = new Map();
 
 	var locals:Map<String, {
@@ -65,7 +64,6 @@ class Interp {
 	#else
 	public var variables:Hash<Dynamic>;
 	public var publicVariables:Hash<Dynamic>;
-	public var staticVariables:Hash<Dynamic>;
 
 	var locals:Hash<{r:Dynamic}>;
 	var binops:Hash<Expr->Expr->Dynamic>;
@@ -87,7 +85,6 @@ class Interp {
 
 	var script:SScript;
 
-	public var allowStaticVariables:Bool = false;
 	public var allowPublicVariables:Bool = false;
 
 	var __instanceFields:Array<String> = [];
@@ -117,11 +114,9 @@ class Interp {
 		#if haxe3
 		variables = new Map<String, Dynamic>();
 		publicVariables = new Map<String, Dynamic>();
-		staticVariables = new Map<String, Dynamic>();
 		#else
 		variables = new Hash();
 		publicVariables = new Hash();
-		staticVariables = new Hash();
 		#end
 
 		variables.set("null", null);
@@ -244,9 +239,7 @@ class Interp {
 				&& ftype != 'Anon'
 				&& !Tools.compatibleWithEachOtherObjects(cl, clN))
 				error(EUnmatchingType(ftype, stype, name));
-		if (allowStaticVariables && staticVariables.exists(name))
-			staticVariables.set(name, v);
-		else if (allowPublicVariables && publicVariables.exists(name))
+		if (allowPublicVariables && publicVariables.exists(name))
 			publicVariables.set(name, v);
 		else
 			variables.set(name, v);
@@ -260,7 +253,7 @@ class Interp {
 					return error(EInvalidFinal(id));
 				var l = locals.get(id);
 				if (l == null) {
-					if (!variables.exists(id) && !staticVariables.exists(id) && !publicVariables.exists(id) && scriptObject != null) {
+					if (!variables.exists(id) && !publicVariables.exists(id) && scriptObject != null) {
 						if (Type.typeof(scriptObject) == TObject) {
 							Reflect.setField(scriptObject, id, v);
 						} else {
@@ -514,9 +507,7 @@ class Interp {
 
 		var v = variables.get(id);
 		//  !publicVariables.exists(id)
-		if (staticVariables.exists(id)) {
-			return staticVariables.get(id);
-		} else if (publicVariables.exists(id)) {
+		if (publicVariables.exists(id)) {
 			return publicVariables.get(id);
 		} else if (variables.exists(id)) {
 			return variables.get(id);
@@ -557,7 +548,7 @@ class Interp {
 				}
 			case EIdent(id):
 				return resolve(id);
-			case EVar(n, t, e, g, isPublic, isStatic):
+			case EVar(n, t, e, g, isPublic):
 				if (t != null && e != null) {
 					var e = expr(e);
 					var ftype:String = Tools.ctToType(t);
@@ -599,7 +590,7 @@ class Interp {
 
 				declared.push({n: n, old: locals.get(n)});
 				locals.set(n, {r: expr1, isFinal: false, t: t});
-				if (depth == 0) (isStatic == true ? staticVariables : (isPublic ? publicVariables : variables)).set(n, locals[n].r);
+				if (depth == 0) (isPublic ? publicVariables : variables).set(n, locals[n].r);
 				return null;
 			case EFinal(n, t, e):
 				if (t != null && e != null) {
@@ -764,7 +755,7 @@ class Interp {
 					error(ECustom('Package path cannot have capital letters'));
 				@:privateAccess script.setPackagePath(p);
 				return null;
-			case EFunction(params, fexpr, name, _, d, isPublic, isStatic):
+			case EFunction(params, fexpr, name, _, d, isPublic):
 				var capturedLocals = duplicate(locals);
 				var me = this;
 				var hasOpt = false, minParams = 0;
@@ -827,7 +818,7 @@ class Interp {
 				if (name != null) {
 					if (depth == 0) {
 						// global function
-						((isStatic && allowStaticVariables) ? staticVariables : ((isPublic && allowPublicVariables) ? publicVariables : variables)).set(name, f);
+						((isPublic && allowPublicVariables) ? publicVariables : variables).set(name, f);
 					} else {
 						// function-in-function is a local function
 						declared.push({n: name, old: locals.get(name)});
