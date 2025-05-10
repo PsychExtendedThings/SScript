@@ -42,7 +42,7 @@ typedef Expr = {
 enum ExprDef {
 	EConst(c:Const);
 	EIdent(v:String, ?isFinal:Bool);
-	EVar(n:String, ?t:CType, ?e:Expr, ?g:Array<String>);
+	EVar(n:String, ?t:CType, ?e:Expr, ?g:Array<String>, ?isPublic:Bool, ?isStatic:Bool);
 	EFinal(f:String, ?t:CType, ?e:Expr);
 	EParent(e:Expr);
 	EBlock(e:Array<Expr>);
@@ -58,7 +58,7 @@ enum ExprDef {
 	ESafeNavigator(e1:Expr, f:String);
 	EBreak;
 	EContinue;
-	EFunction(args:Array<Argument>, e:Expr, ?name:String, ?ret:CType, ?d:DynamicToken);
+	EFunction(args:Array<Argument>, e:Expr, ?name:String, ?ret:CType, ?d:DynamicToken, ?isPublic:Bool, ?isStatic:Bool);
 	EReturn(?e:Expr);
 	EArray(e:Expr, index:Expr);
 	EArrayDecl(e:Array<Expr>);

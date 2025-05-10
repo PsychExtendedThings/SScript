@@ -22,11 +22,15 @@
 
 package hscriptBase;
 
+import haxe.iterators.StringKeyValueIteratorUnicode;
 import haxe.ds.*;
 import haxe.PosInfos;
 import hscriptBase.Expr;
 import haxe.Constraints;
 import tea.SScript;
+import crowplexus.hscript.IHScriptCustomBehaviour;
+import haxe.EnumTools;
+import haxe.display.Protocol.InitializeResult;
 
 using StringTools;
 
@@ -39,8 +43,16 @@ private enum Stop {
 @:keepSub
 @:access(tea.SScript)
 class Interp {
+	public var scriptObject(default, set):Dynamic;
+	public function set_scriptObject(v:Dynamic) {
+		__instanceFields = (v == null) ? [] : Type.getInstanceFields(Type.getClass(v));
+		return scriptObject = v;
+	}
+
 	#if haxe3
 	public var variables:Map<String, Dynamic>;
+	public var publicVariables:Map<String, Dynamic>;
+	public var staticVariables:Map<String, Dynamic>;
 	public var dynamicFuncs:Map<String, Bool> = new Map();
 
 	var locals:Map<String, {
@@ -52,12 +64,14 @@ class Interp {
 	var binops:Map<String, Expr->Expr->Dynamic>;
 	#else
 	public var variables:Hash<Dynamic>;
+	public var publicVariables:Hash<Dynamic>;
+	public var staticVariables:Hash<Dynamic>;
 
 	var locals:Hash<{r:Dynamic}>;
 	var binops:Hash<Expr->Expr->Dynamic>;
 	#end
 
-	var depth:Int;
+	var depth:Int = 0;
 	var inTry:Bool;
 	var declared:Array<{n:String, old:{
 		r:Dynamic,
@@ -72,6 +86,11 @@ class Interp {
 	var usingStringTools:Bool = false;
 
 	var script:SScript;
+
+	public var allowStaticVariables:Bool = false;
+	public var allowPublicVariables:Bool = false;
+
+	var __instanceFields:Array<String> = [];
 
 	var curExpr:Expr;
 
@@ -97,8 +116,12 @@ class Interp {
 	private function resetVariables() {
 		#if haxe3
 		variables = new Map<String, Dynamic>();
+		publicVariables = new Map<String, Dynamic>();
+		staticVariables = new Map<String, Dynamic>();
 		#else
 		variables = new Hash();
+		publicVariables = new Hash();
+		staticVariables = new Hash();
 		#end
 
 		variables.set("null", null);
@@ -221,7 +244,12 @@ class Interp {
 				&& ftype != 'Anon'
 				&& !Tools.compatibleWithEachOtherObjects(cl, clN))
 				error(EUnmatchingType(ftype, stype, name));
-		variables.set(name, v);
+		if (allowStaticVariables && staticVariables.exists(name))
+			staticVariables.set(name, v);
+		else if (allowPublicVariables && publicVariables.exists(name))
+			publicVariables.set(name, v);
+		else
+			variables.set(name, v);
 	}
 
 	function assign(e1:Expr, e2:Expr):Dynamic {
@@ -232,11 +260,25 @@ class Interp {
 					return error(EInvalidFinal(id));
 				var l = locals.get(id);
 				if (l == null) {
-					if (!variables.exists(id))
-						error(EUnknownVariable(id));
-					if (Type.typeof(variables.get(id)) == TFunction && !dynamicFuncs.exists(id))
-						error(EFunctionAssign(id));
+					if (!variables.exists(id) && !staticVariables.exists(id) && !publicVariables.exists(id) && scriptObject != null) {
+						if (Type.typeof(scriptObject) == TObject) {
+							Reflect.setField(scriptObject, id, v);
+						} else {
+							if (__instanceFields.contains(id)) {
+								Reflect.setProperty(scriptObject, id, v);
+							} else if (__instanceFields.contains('set_$id')) { // setter
+								Reflect.getProperty(scriptObject, 'set_$id')(v);
+							} else {
+								setVar(id, v);
+							}
+						}
+					} else {
+						if (!variables.exists(id))
+							error(EUnknownVariable(id));
+						if (Type.typeof(variables.get(id)) == TFunction && !dynamicFuncs.exists(id))
+							error(EFunctionAssign(id));
 					setVar(id, v);
+					}
 				} else {
 					var t = l.t;
 					if (t != null) {
@@ -284,8 +326,15 @@ class Interp {
 			case EIdent(id):
 				var l = locals.get(id);
 				v = fop(expr(e1), expr(e2));
-				if (l == null)
-					setVar(id, v)
+				if (l == null) {
+					if (__instanceFields.contains(id)) {
+						Reflect.setProperty(scriptObject, id, v);
+					} else if (__instanceFields.contains('set_$id')) { // setter
+						Reflect.getProperty(scriptObject, 'set_$id')(v);
+					} else {
+						setVar(id, v);
+					}
+				}
 				else
 					l.r = v;
 			case EField(e, f):
@@ -455,7 +504,6 @@ class Interp {
 		var l = locals.get(id);
 		if (l != null)
 			return l.r;
-		var v = variables.get(id);
 		if (specialObject != null && specialObject.obj != null) {
 			var field = Reflect.getProperty(specialObject.obj, id);
 			if (field != null
@@ -463,6 +511,32 @@ class Interp {
 				&& (specialObject.exclusions == null || !specialObject.exclusions.contains(id)))
 				return field;
 		}
+
+		var v = variables.get(id);
+		//  !publicVariables.exists(id)
+		if (staticVariables.exists(id)) {
+			return staticVariables.get(id);
+		} else if (publicVariables.exists(id)) {
+			return publicVariables.get(id);
+		} else if (variables.exists(id)) {
+			return variables.get(id);
+		} else {
+			if (scriptObject != null) {
+				// search in object
+				if (id == "this") {
+					return scriptObject;
+				} else if ((Type.typeof(scriptObject) == TObject) && Reflect.hasField(scriptObject, id)) {
+					return Reflect.field(scriptObject, id);
+				} else {
+					if (__instanceFields.contains(id)) {
+						return Reflect.getProperty(scriptObject, id);
+					} else if (__instanceFields.contains('get_$id')) { // getter
+						return Reflect.getProperty(scriptObject, 'get_$id')();
+					}
+				}
+			}
+		}
+
 		if (v == null && !variables.exists(id))
 			error(EUnknownVariable(id));
 		return v;
@@ -483,7 +557,7 @@ class Interp {
 				}
 			case EIdent(id):
 				return resolve(id);
-			case EVar(n, t, e, g):
+			case EVar(n, t, e, g, isPublic, isStatic):
 				if (t != null && e != null) {
 					var e = expr(e);
 					var ftype:String = Tools.ctToType(t);
@@ -525,6 +599,7 @@ class Interp {
 
 				declared.push({n: n, old: locals.get(n)});
 				locals.set(n, {r: expr1, isFinal: false, t: t});
+				if (depth == 0) (isStatic == true ? staticVariables : (isPublic ? publicVariables : variables)).set(n, locals[n].r);
 				return null;
 			case EFinal(n, t, e):
 				if (t != null && e != null) {
@@ -689,7 +764,7 @@ class Interp {
 					error(ECustom('Package path cannot have capital letters'));
 				@:privateAccess script.setPackagePath(p);
 				return null;
-			case EFunction(params, fexpr, name, _, d):
+			case EFunction(params, fexpr, name, _, d, isPublic, isStatic):
 				var capturedLocals = duplicate(locals);
 				var me = this;
 				var hasOpt = false, minParams = 0;
@@ -752,7 +827,7 @@ class Interp {
 				if (name != null) {
 					if (depth == 0) {
 						// global function
-						variables.set(name, f);
+						((isStatic && allowStaticVariables) ? staticVariables : ((isPublic && allowPublicVariables) ? publicVariables : variables)).set(name, f);
 					} else {
 						// function-in-function is a local function
 						declared.push({n: name, old: locals.get(name)});
@@ -982,6 +1057,9 @@ class Interp {
 		cast(map, haxe.Constraints.IMap<Dynamic, Dynamic>).set(key, value);
 	}
 
+	public static var getRedirects:Map<String, Dynamic->String->Dynamic> = [];
+	public static var setRedirects:Map<String, Dynamic->String->Dynamic->Dynamic> = [];
+
 	function get(o:Dynamic, f:String):Dynamic {
 		if (o == null)
 			error(EInvalidAccess(f));
@@ -989,24 +1067,57 @@ class Interp {
 			var func = StringFunctionTools.getStringToolsFunction(f);
 			if (Std.isOfType(o, String) && usingStringTools && func != null)
 				return func;
-			#if php
-			// https://github.com/HaxeFoundation/haxe/issues/4915
-			try {
-				Reflect.getProperty(o, f);
-			} catch (e:Dynamic) {
-				Reflect.field(o, f);
+			if (o is IHScriptCustomBehaviour) {
+				var obj = cast(o, IHScriptCustomBehaviour);
+				return obj.hget(f);
 			}
-			#else
-			return Reflect.getProperty(o, f);
-			#end
+			var redirect:Dynamic->String->Dynamic = null;
+			var cl:String = switch(Type.typeof(o)) {
+					case TNull:
+						"Null";
+					case TInt:
+						"Int";
+					case TFloat:
+						"Float";
+					case TBool:
+						"Bool";
+					case _:
+						null;
+				};
+				if (getRedirects.exists(cl = Type.getClassName(Type.getClass(o))) && (redirect = getRedirects[cl]) != null) {
+					return redirect(o, f);
+				} else {
+					var v = null;
+					if ((v = Reflect.getProperty(o, f)) == null) v = Reflect.getProperty(Type.getClass(o), f);
+					return v;
+				}
 		}
 	}
 
 	function set(o:Dynamic, f:String, v:Dynamic):Dynamic {
 		if (o == null)
 			error(EInvalidAccess(f));
-		/*if( Type.typeof(v) != TFunction ) Reflect.setField(o,f,v); // NEVER USE setField !!
-			else */ Reflect.setProperty(o, f, v);
+
+		var redirect:Dynamic->String->Dynamic->Dynamic = null;
+		var cl:String = switch(Type.typeof(o)) {
+			case TNull:
+				"Null";
+			case TInt:
+				"Int";
+			case TFloat:
+				"Float";
+			case TBool:
+				"Bool";
+			case _:
+				null;
+		};
+		if (setRedirects.exists(cl = Type.getClassName(Type.getClass(o))) && (redirect = setRedirects[cl]) != null)
+			return redirect(o, f, v);
+		if (o is IHScriptCustomBehaviour) {
+			var obj = cast(o, IHScriptCustomBehaviour);
+			return obj.hset(f, v);
+		}
+		Reflect.setProperty(o,f,v);
 		return v;
 	}
 
