@@ -28,7 +28,7 @@ import haxe.PosInfos;
 import hscriptBase.Expr;
 import haxe.Constraints;
 import tea.SScript;
-import crowplexus.hscript.IHScriptCustomBehaviour;
+import hscriptBase.IHScriptCustomBehaviour;
 import haxe.EnumTools;
 import haxe.display.Protocol.InitializeResult;
 
